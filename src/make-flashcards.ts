@@ -3,6 +3,7 @@ import { transliterateArabic } from "./transliteration/arabic-transliterator.js"
 import { transliterateChinese } from "./transliteration/chinese-transliterator.js";
 import { transliterateCantonese } from "./transliteration/cantonese-transliterator.js";
 import { transliterateHindi } from "./transliteration/hindi-transliterator.js";
+import { transliterateJapanese } from "./transliteration/japanese-transliterator.js";
 import type { LearnedLexeme } from './model/lexemes.js';
 import { CURRENT_COURSE } from './config.js';
 import { LANGUAGE_COURSES, learningLanguageNameFor, fromLanguageNameFor } from './model/courses.js';
@@ -38,6 +39,35 @@ const NOTE_TSV_HEADERS = [
     "Extra",
 ];
 
+// Duolingo supplies multiple transliterationTexts per token (e.g. Japanese gives both "romaji" and "kana");
+// pick the type appropriate for the current course and ignore the rest.
+function acceptedTransliterationType(type: string): boolean {
+    if (CURRENT_COURSE == LANGUAGE_COURSES.JAPANESE_ENGLISH) {
+        return type == 'romaji';
+    }
+    return type == 'pinyin' || type == 'jyutping';
+}
+
+function appendTransliterationTokens(transliteration: string, transliterations: any): string {
+    for (let token of transliterations.tokens) {
+        for (let text of token.transliterationTexts) {
+            if (!acceptedTransliterationType(text.type)) {
+                if (text.type != 'kana') {
+                    console.error('Warning: Found unexpected transliteration type=' + text.type + ', text=' + text.text);
+                }
+            } else {
+                if (token.token == "、") {
+                    transliteration += text.text + ", ";
+                } else {
+                    transliteration += text.text + " ";
+                }
+            }
+        }
+        transliteration = transliteration.replaceAll(" ,", ",");
+    }
+    return transliteration;
+}
+
 function getChallenges(sessionData: any): any[] {
     let allChallenges: any[] = [];
     allChallenges = allChallenges.concat(sessionData.challenges);
@@ -48,7 +78,7 @@ function getChallenges(sessionData: any): any[] {
 }
 
 // Import challenge data from a JSON file and return as TSV rows
-function makeFlashcardsForSession(jsonFilePath: string, sourceDesc: string, teachingObjective: string): Note[] {
+async function makeFlashcardsForSession(jsonFilePath: string, sourceDesc: string, teachingObjective: string): Promise<Note[]> {
     console.debug('Importing from ' + jsonFilePath);
     let sessionData: any = {};
     try {
@@ -64,33 +94,23 @@ function makeFlashcardsForSession(jsonFilePath: string, sourceDesc: string, teac
         if (challenge) {
             //let isHard = challenge.metadata?.indicator_type?.name == 'HARD_CHALLENGE';
             if (challenge?.type === 'translate') {
-                let isReverse = challenge.metadata.specific_type === 'reverse_tap';
+                let isReverse = challenge.metadata.specific_type === 'reverse_tap' || challenge.metadata.specific_type === 'reverse_translate';
                 let textLang1 = challenge.prompt;
                 let textLang2 = challenge.metadata?.challenge_construction_insights?.best_solution;
                 let transliteration = "";
                 let transliterations: any = isReverse ? (challenge?.correctSolutionTransliterations?.[0]) : (challenge?.promptTransliteration);
                 // Transliterations for the learning language
                 if (transliterations) {
-                    for (let token of transliterations.tokens) {
-                        for (let text of token.transliterationTexts) {
-                            if (text.type != 'pinyin' && text.type != 'jyutping') {
-                                console.error('Warning: Found non-pinyin: type=' + text.type + ', text=' + text.text);
-                            } else {
-                                if (/*text.text == '' && */token.token=="、") {
-                                    transliteration += text.text + ", ";
-                                } else {
-                                    transliteration += text.text + " ";
-                                }
-                            }
-                        }
-                        transliteration = transliteration.replaceAll(" ,", ",");
-                    }
+                    transliteration = appendTransliterationTokens(transliteration, transliterations);
                 } else if (jsonFilePath.includes("DUOLINGO_AR_EN")) {
                     let arabicText = isReverse ? textLang2 : textLang1;
                     transliteration = transliterateArabic(arabicText);
                 } else if (CURRENT_COURSE == LANGUAGE_COURSES.HINDI_ENGLISH) {
                     let hindiText = isReverse ? textLang2 : textLang1;
                     transliteration = transliterateHindi(hindiText);
+                } else if (CURRENT_COURSE == LANGUAGE_COURSES.JAPANESE_ENGLISH) {
+                    let japaneseText = isReverse ? textLang2 : textLang1;
+                    transliteration = await transliterateJapanese(japaneseText);
                 } else if (CURRENT_COURSE == LANGUAGE_COURSES.CHINESE_ENGLISH) {
                     // Haven't seen this happen yet
                     let chineseText = isReverse ? textLang2 : textLang1;
@@ -140,26 +160,16 @@ function makeFlashcardsForSession(jsonFilePath: string, sourceDesc: string, teac
                     let transliteration = "";
                     let transliterations = correctChoice.phraseTransliteration;
                     if (transliterations) {
-                        for (let token of transliterations.tokens) {
-                            for (let text of token.transliterationTexts) {
-                                if (text.type != 'pinyin' && text.type != 'jyutping') {
-                                    console.error('Warning: Found non-pinyin: type=' + text.type + ', text=' + text.text);
-                                } else {
-                                    if (token.token=="、") { // && text.text == ''
-                                        transliteration += text.text + ", ";
-                                    } else {
-                                        transliteration += text.text + " ";
-                                    }
-                                }
-                            }
-                            transliteration = transliteration.replaceAll(" ,", ",");
-                        }
+                        transliteration = appendTransliterationTokens(transliteration, transliterations);
                     } else if (jsonFilePath.includes("DUOLINGO_AR_EN")) {
                         let arabicText = isReverse ? textLang1 : textLang2;
                         transliteration = transliterateArabic(arabicText);
                     } else if (CURRENT_COURSE == LANGUAGE_COURSES.HINDI_ENGLISH) {
                         let hindiText = isReverse ? textLang1 : textLang2;
                         transliteration = transliterateHindi(hindiText);
+                    } else if (CURRENT_COURSE == LANGUAGE_COURSES.JAPANESE_ENGLISH) {
+                        let japaneseText = isReverse ? textLang1 : textLang2;
+                        transliteration = await transliterateJapanese(japaneseText);
                     } else if (CURRENT_COURSE == LANGUAGE_COURSES.CHINESE_ENGLISH) {
                         // Haven't seen this happen yet
                         let chineseText = isReverse ? textLang1 : textLang2;
@@ -214,7 +224,7 @@ function makeFlashcardsForSession(jsonFilePath: string, sourceDesc: string, teac
 
 
 // TOP LEVEL FUNCTION
-function makeSentenceFlashcards() {
+async function makeSentenceFlashcards() {
 
     ////let combinedTsvRows: string[] = [];
     let tsvRows: string[] = [];
@@ -238,7 +248,7 @@ function makeSentenceFlashcards() {
                         let sessionFile = FM.getSessionFilename(
                             section.index, unit.unitIndex, levelIndex, sessionIndex
                         );
-                        let notes: Note[] = makeFlashcardsForSession(sessionFile, sourceDesc, unit.teachingObjective);
+                        let notes: Note[] = await makeFlashcardsForSession(sessionFile, sourceDesc, unit.teachingObjective);
                         combinedNotes = combinedNotes.concat(notes);
                         ////let tsvRows: string[] = makeFlashcardsForSession(sessionFile, sourceDesc, unit.teachingObjective);
                         ////combinedTsvRows = combinedTsvRows.concat(tsvRows);
@@ -276,7 +286,7 @@ function dedupe(notes: Note[]): Note[] {
 }
 
 // TOP LEVEL FUNCTION
-function makeLexemeFlashcards() {
+async function makeLexemeFlashcards() {
     let tsvRows: string[] = [];
     let headerRow: string = NOTE_TSV_HEADERS.join('\t');
     tsvRows.push(headerRow);
@@ -301,6 +311,8 @@ function makeLexemeFlashcards() {
             note.transliteration = transliterateArabic(lexeme.text);
         } else if (CURRENT_COURSE.learningLanguage == 'hi') {
             note.transliteration = transliterateHindi(lexeme.text);
+        } else if (CURRENT_COURSE.learningLanguage == 'ja') {
+            note.transliteration = await transliterateJapanese(lexeme.text);
         } else if (CURRENT_COURSE.learningLanguage == 'zh') {
             note.transliteration = transliterateChinese(lexeme.text);
         } else if (CURRENT_COURSE.learningLanguage == 'zc') {
@@ -328,6 +340,6 @@ function makeLexemeFlashcards() {
     writeStringToFile(tsvContent, flashcardsFile);
 }
 
-makeLexemeFlashcards();
+await makeLexemeFlashcards();
 
-makeSentenceFlashcards();
+await makeSentenceFlashcards();
